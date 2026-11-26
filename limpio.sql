@@ -709,11 +709,11 @@ AS
 BEGIN
 	BEGIN TRY
 		BEGIN TRANSACTION
-			--Cabecera: el folio sale de la SEQUENCE, la fecha es la de hoy y nace Pendiente
+			
 			INSERT INTO Solicitudes(Folio, IdOrganizacion, Fecha, Estado)
 			VALUES (NEXT VALUE FOR Seq_Folios, @IdOrganizacion, GETDATE(), 'Pendiente')
 
-			--Renglon: se liga a la ultima solicitud de esa organizacion
+			
 			INSERT INTO DetalleSolicitudes(IdSolicitud, IdAlimento, Cantidad)
 			VALUES ((SELECT MAX(IdSolicitud) FROM Solicitudes WHERE IdOrganizacion = @IdOrganizacion), @IdAlimento, @Cantidad)
 		COMMIT TRANSACTION
@@ -723,7 +723,10 @@ BEGIN
 	BEGIN CATCH
 		IF @@TRANCOUNT > 0
 			ROLLBACK TRANSACTION
-		PRINT 'Ocurrio un error al registrar la solicitud'
+
+			PRINT 'Ocurrio un error al registrar la solicitud'
+			INSERT INTO Errores(Procedimiento, NumeroError, Mensaje)
+			VALUES ('RegistrarSolicitud', ERROR_NUMBER(), ERROR_MESSAGE());
 	END CATCH
 END
 
@@ -777,4 +780,70 @@ BEGIN
 END
 
 EXEC ConsultarOrigenSalida @IdSalida = 1
+
+
+--************************************************************
+--PIVOT
+--************************************************************
+
+SELECT Zona,
+	ISNULL([Octubre], 0) AS Octubre,
+	ISNULL([Noviembre], 0) AS Noviembre,
+	ISNULL([Diciembre], 0) AS Diciembre
+FROM (
+	SELECT Organizaciones.Zona, Solicitudes.IdSolicitud,
+		CASE MONTH(Solicitudes.Fecha)
+			WHEN 10 THEN 'Octubre'
+			WHEN 11 THEN 'Noviembre'
+			WHEN 12 THEN 'Diciembre'
+		END AS Mes
+	FROM Solicitudes
+	INNER JOIN Organizaciones
+	ON Solicitudes.IdOrganizacion = Organizaciones.IdOrganizacion
+	WHERE Solicitudes.Estado = 'Confirmada'
+) AS Origen
+PIVOT (
+	COUNT(IdSolicitud)
+	FOR Mes IN ([Octubre], [Noviembre], [Diciembre])
+) AS PivotZona
+
+--************************************
+--Tecnicas avanzadas
+--**********************************
+
+--Clasificar lotes por vigencia con CASE
+SELECT Lotes.IdLote, Alimentos.Nombre, Lotes.Caducidad, Lotes.Existencia,
+CASE
+	WHEN Lotes.Caducidad < CAST(GETDATE() AS DATE) THEN 'Caducado'
+	WHEN Lotes.Caducidad <= DATEADD(DAY, 7, CAST(GETDATE() AS DATE)) THEN 'Por caducar'
+	ELSE 'Vigente'
+END AS Vigencia
+FROM Lotes
+INNER JOIN Alimentos
+ON Lotes.IdAlimento = Alimentos.IdAlimento
+ORDER BY Lotes.Caducidad
+
+--Union de salidas, lotes y donantes
+SELECT SalidasLote.IdSalida, SalidasLote.Fecha, SalidasLote.Cantidad,
+	Lotes.IdLote, Lotes.Caducidad,
+	Alimentos.Nombre AS Alimento,
+	Donantes.Nombre AS Donante
+FROM SalidasLote
+INNER JOIN Lotes
+ON SalidasLote.IdLote = Lotes.IdLote
+INNER JOIN Donantes
+ON Lotes.IdDonante = Donantes.IdDonante
+INNER JOIN Alimentos
+ON Lotes.IdAlimento = Alimentos.IdAlimento
+ORDER BY SalidasLote.IdSalida
+
+--DENSE_RANK: ordenar organizaciones por solicitudes surtidas
+--(las organizaciones con el mismo numero de solicitudes comparten posicion)
+SELECT Organizaciones.Nombre, Organizaciones.Zona,
+	COUNT(Solicitudes.IdSolicitud) AS SolicitudesSurtidas,
+	DENSE_RANK() OVER (ORDER BY COUNT(Solicitudes.IdSolicitud) DESC) AS Posicion
+FROM Organizaciones
+LEFT JOIN Solicitudes
+ON Organizaciones.IdOrganizacion = Solicitudes.IdOrganizacion AND Solicitudes.Estado = 'Confirmada'
+GROUP BY Organizaciones.Nombre, Organizaciones.Zona
 
