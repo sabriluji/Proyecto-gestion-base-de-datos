@@ -672,3 +672,109 @@ CREATE TABLE Errores (
 	Mensaje NVARCHAR(500),
 	Fecha DATETIME DEFAULT GETDATE()
 );
+
+
+--Recibir un lote (Almacenista)
+CREATE PROCEDURE RecibirLote
+	@IdDonante INT,
+	@IdAlimento INT,
+	@Caducidad DATE,
+	@Existencia INT
+AS
+BEGIN
+	BEGIN TRY
+		BEGIN TRANSACTION;
+			IF @Existencia <= 0
+				THROW 50003, 'La existencia debe ser un entero positivo', 1;
+
+			INSERT INTO Lotes(IdDonante, IdAlimento, Recepcion, Caducidad, Existencia)
+			VALUES (@IdDonante, @IdAlimento, GETDATE(), @Caducidad, @Existencia)
+		COMMIT TRANSACTION
+		PRINT 'Lote recibido'
+	END TRY
+	BEGIN CATCH
+		IF @@TRANCOUNT > 0
+			ROLLBACK TRANSACTION;
+		THROW;
+	END CATCH
+END
+
+--Registrar una solicitud con su primer renglon (Representante)
+--El folio se genera solo con la SEQUENCE
+CREATE PROCEDURE RegistrarSolicitud
+	@IdOrganizacion INT,
+	@IdAlimento INT,
+	@Cantidad INT
+AS
+BEGIN
+	BEGIN TRY
+		BEGIN TRANSACTION
+			--Cabecera: el folio sale de la SEQUENCE, la fecha es la de hoy y nace Pendiente
+			INSERT INTO Solicitudes(Folio, IdOrganizacion, Fecha, Estado)
+			VALUES (NEXT VALUE FOR Seq_Folios, @IdOrganizacion, GETDATE(), 'Pendiente')
+
+			--Renglon: se liga a la ultima solicitud de esa organizacion
+			INSERT INTO DetalleSolicitudes(IdSolicitud, IdAlimento, Cantidad)
+			VALUES ((SELECT MAX(IdSolicitud) FROM Solicitudes WHERE IdOrganizacion = @IdOrganizacion), @IdAlimento, @Cantidad)
+		COMMIT TRANSACTION
+		PRINT 'Solicitud registrada'
+
+	END TRY
+	BEGIN CATCH
+		IF @@TRANCOUNT > 0
+			ROLLBACK TRANSACTION
+		PRINT 'Ocurrio un error al registrar la solicitud'
+	END CATCH
+END
+
+--SURTIR POR CADUCIDAD
+CREATE PROCEDURE LotePorCaducidad
+	@IdAlimento INT
+AS
+BEGIN
+	BEGIN TRANSACTION
+		SELECT TOP 1 Lotes.IdLote, Alimentos.Nombre AS Alimento, Lotes.Caducidad, Lotes.Existencia, Donantes.Nombre AS Donante
+		FROM Lotes
+		INNER JOIN Alimentos
+		ON Lotes.IdAlimento = Alimentos.IdAlimento
+		INNER JOIN Donantes
+		ON Lotes.IdDonante = Donantes.IdDonante
+		WHERE Lotes.IdAlimento = @IdAlimento
+			AND Lotes.Existencia > 0
+			AND Lotes.Caducidad >= GETDATE()
+		ORDER BY Lotes.Caducidad, Lotes.IdLote
+	COMMIT TRANSACTION
+END
+
+EXEC LotePorCaducidad @IdAlimento = 7
+
+--Consultar el origen de una salida
+CREATE PROCEDURE ConsultarOrigenSalida
+	@IdSalida INT
+AS
+BEGIN
+	BEGIN TRANSACTION
+		SELECT SalidasLote.IdSalida, SalidasLote.Fecha AS FechaSalida, SalidasLote.Cantidad,
+			Alimentos.Nombre AS Alimento, Alimentos.Unidad,
+			Lotes.IdLote, Lotes.Recepcion, Lotes.Caducidad,
+			Donantes.Nombre AS Donante, Donantes.Correo,
+			Solicitudes.Folio, Organizaciones.Nombre AS Organizacion
+		FROM SalidasLote
+		INNER JOIN Lotes
+		ON SalidasLote.IdLote = Lotes.IdLote
+		INNER JOIN Donantes
+		ON Lotes.IdDonante = Donantes.IdDonante
+		INNER JOIN Alimentos
+		ON Lotes.IdAlimento = Alimentos.IdAlimento
+		INNER JOIN DetalleSolicitudes
+		ON SalidasLote.IdDetalle = DetalleSolicitudes.IdDetalle
+		INNER JOIN Solicitudes
+		ON DetalleSolicitudes.IdSolicitud = Solicitudes.IdSolicitud
+		INNER JOIN Organizaciones
+		ON Solicitudes.IdOrganizacion = Organizaciones.IdOrganizacion
+		WHERE SalidasLote.IdSalida = @IdSalida
+	COMMIT TRANSACTION
+END
+
+EXEC ConsultarOrigenSalida @IdSalida = 1
+
